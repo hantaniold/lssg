@@ -8,6 +8,11 @@
 ** and writes their bit-wise deltas to an output file. */
 
 
+#define EXP_MASK 2047 //0b11111111111
+#define FRAC_MASK (-1L ^ ((1L << 63) >> 11)) //0b00000000000011....
+#define BIAS 1023
+#define FRAC_WIDTH 52
+#define EXP_WIDTH 11
 
 double gDelta(double s, double m);
 int main(int argc, char * argv[]) {
@@ -53,8 +58,13 @@ int main(int argc, char * argv[]) {
 		} else {
 			d1 = *((double *) buf1);
 			d2 = *((double *) buf2);
-			deltaLF = gDelta(d1,d2);
-			fwrite(&deltaLF,sizeof(double),1,outputFile);
+			if (d1 == 0) { 
+				fwrite(&d1,sizeof(double),1,outputFile); 
+			} else {
+				deltaLF = gDelta(d1,d2);
+				fwrite(&deltaLF,sizeof(double),1,outputFile);
+			}
+			
 		}
 	}
 	fclose(fp1);
@@ -63,22 +73,52 @@ int main(int argc, char * argv[]) {
 	exit(1);
 } 
 
+
+void printBin(char * msg, long int x) {
+
+	int i = 63;
+	while (i > 0) {
+		printf("%ld",(x>>i) & 1);
+		if (i == 63) printf("|");
+		if (i == 52) printf("|");
+		i--;
+	}
+	printf(": %s ",msg);
+	printf("\n");
+}
 /* "goodDelta" - Given doubles "m"inuend and "s"ubtrahend, compute
 the delta which is the sign of (m - s), exponent of m, and fraction of (m - s)'s fraction * 2^(exponent(s) - exponent(m)), divided by two and the e(s) - e(m) + 1'th bit after the decimal set to a 1.  */
 double gDelta(double s, double m) {
+// 0.045 - 0.05
 	long int exp_m;
-	long int exp_d1; //delta 1, "diff"
-    short exp_d2; //delta 2, "diff'"
-	double frac_d1;
-	double frac_d2;
-	double d1 = m - s;
-	short EXP_MASK = 2047; //0b11111111111
-    short BIAS = 1023;
+	long int exp_d; //delta 1, "diff"
+	short sign_d; //Sign bit of delta
+	long int frac_d;
+	double d = m - s;
+//	printf("m: %lf s: %lf d: %lf \n",m,s,d);
 	long int m_as_bits = * (long int *) &m;
-    long int d1_as_bits = * (long int *) &d1;
-	exp_m =  ((m_as_bits >> 52) & EXP_MASK) - BIAS;
-    exp_d1 = ((d1_as_bits >> 52) & EXP_MASK) - BIAS;
-
-    printf("m: %ld d1: %ld\n",exp_m,exp_d1);
-	return 2.0;
+    long int d_as_bits = * (long int *) &d;
+//	printBin("d_as_bits",d_as_bits);
+	frac_d = d_as_bits & FRAC_MASK;
+//	printBin("frac_d",frac_d);
+	exp_m =  ((m_as_bits >> FRAC_WIDTH) & EXP_MASK) - BIAS;
+    exp_d = ((d_as_bits >> FRAC_WIDTH) & EXP_MASK) - BIAS;
+//	printf("exp_m: %ld, exp_d: %ld,",exp_m,exp_d);
+	exp_d = exp_d - exp_m;
+//	printf(" exp_d - exp_m: %ld,",exp_d);
+	/* Implement way to deal with exp_d2 >= 0. this only does for < 0 */
+    short SH_AMT = (-1) * exp_d + 1;
+	frac_d >>= SH_AMT; //Get exp_d2 + 1 leading zeros in the fraction
+//	printf(" SH_AMT: %d\n",SH_AMT);
+//	printBin("frac_d >> SH_AMT",frac_d);
+	frac_d = frac_d | (1L << (FRAC_WIDTH -  SH_AMT)); //Set new LS zero to 1.
+//	printBin("frac_d with 1",frac_d);
+	d_as_bits &= (1L << 63); //zero out everything except the sign bit in delta
+	d_as_bits |= ((exp_m + BIAS) << 52); //set delta's exponent bits to m's
+	d_as_bits |= (frac_d); //set delta's fraction bits.
+	d = * (double *) &d_as_bits;  //turn back into double
+//	printBin("exp_m",(exp_m  + BIAS) << 52);
+//	printBin("d_as_bits final",d_as_bits);
+	return d;
 }
+
