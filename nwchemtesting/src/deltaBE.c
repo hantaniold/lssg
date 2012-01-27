@@ -30,6 +30,8 @@ int main(int argc, char * argv[]) {
 		l1 = *((double *) lBuf1);
 		l2 = *((double *) lBuf2);
 		d = l2 - l1;
+
+        printf("1: %lf \t 2: %lf \n d: %lf \n",l1,l2,d);
 	//	printf("%ld\n",l1);
 	//	printf("%ld\n",l2);
 	//	printf("%ld\n",l2 - l1);
