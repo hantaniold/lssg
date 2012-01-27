@@ -14,7 +14,32 @@
 #define FRAC_WIDTH 52
 #define EXP_WIDTH 11
 
+long ZERO = 0;
+long NEG_ZERO = 1L << 63;
+double POS_SH_AMTS = 0;
+double NEG_SH_AMTS = 0;
+long int ZERO_SHIFTS = 0;
+double POS_COUNT = 0;
+double NEG_COUNT = 0;
+long int NR_BOTH_ZERO = 0;
+long int NR_M_ZERO = 0;
+long int NR_S_ZERO = 0;
+
 double gDelta(double s, double m);
+
+void printBin(char * msg, long int x) {
+
+	int i = 63;
+	while (i > 0) {
+		printf("%ld",(x>>i) & 1);
+		if (i == 63) printf("|");
+		if (i == 52) printf("|");
+		i--;
+	}
+	printf(": %s ",msg);
+	printf("\n");
+}
+
 int main(int argc, char * argv[]) {
 	FILE * fp1;
 	FILE * fp2;
@@ -43,13 +68,11 @@ int main(int argc, char * argv[]) {
 			d2 = *((double *) buf2);
 			deltaLF = d2 - d1;
 		    fwrite(&deltaLF,sizeof(double),1,outputFile);
-      //    printf("1: %lf \t 2: %lf \n d: %lf \n",a,b,delta);
         } else if (strcmp(deltaType,"-ldf") == 0) {
             l1 = *((long *) buf1);
 			l2 = *((long *) buf2);
 			deltaLDF = (double) l2 - l1;
 			fwrite(&deltaLDF,sizeof(long),1,outputFile);
-//			printf("1: %ld \t 2: %ld \n d: %ld \n",l1,l2,deltaLD);
         } else if (strcmp(deltaType,"-xor") == 0) {
             l1 = *((long *) buf1);
 			l2 = *((long *) buf2);
@@ -58,43 +81,46 @@ int main(int argc, char * argv[]) {
 		} else {
 			d1 = *((double *) buf1);
 			d2 = *((double *) buf2);
-			if (d1 == 0) { 
-				fwrite(&d1,sizeof(double),1,outputFile); 
-			} else {
+		/* writing 0 to the delta file signifies that d1 = d2, or 
+			both were zero. */
+			if ((d1 == 0 && d2 == 0) || (d1 == d2)) { 
+				NR_BOTH_ZERO ++;
+				fwrite(&ZERO,sizeof(double),1,outputFile); 
+		/* writing -0 to the delta file signifies that d1 != 0 but d2 = 0 */
+			} else if (d2 == 0) { 
+				NR_M_ZERO ++;
+				fwrite(&NEG_ZERO,sizeof(double),1,outputFile);
+			} else   {
 				deltaLF = gDelta(d1,d2);
+				if (d1 == 0)  { 
+					NR_S_ZERO++;
+				}
 				fwrite(&deltaLF,sizeof(double),1,outputFile);
 			}
 			
 		}
 	}
+	printf("POS_SH_AMTS/POS_COUNT: %lf\n",POS_SH_AMTS/POS_COUNT);
+	printf("POS_COUNT: %lf NEG_COUNT: %lf\n",POS_COUNT,NEG_COUNT);
+	printf(" NEG_SH_AMTS/NEG_COUNT: %lf\n",NEG_SH_AMTS/NEG_COUNT);
+	printf("ZERO_SHIFTS: %ld\n",ZERO_SHIFTS);
+	printf("NR_S_ZERO: %ld NR_M_ZERO: %ld NR_BOTH_ZERO: %ld\n",NR_S_ZERO,NR_M_ZERO,NR_BOTH_ZERO);
 	fclose(fp1);
 	fclose(fp2);
 	fclose(outputFile);		
 	exit(1);
 } 
 
-
-void printBin(char * msg, long int x) {
-
-	int i = 63;
-	while (i > 0) {
-		printf("%ld",(x>>i) & 1);
-		if (i == 63) printf("|");
-		if (i == 52) printf("|");
-		i--;
-	}
-	printf(": %s ",msg);
-	printf("\n");
-}
 /* "goodDelta" - Given doubles "m"inuend and "s"ubtrahend, compute
 the delta which is the sign of (m - s), exponent of m, and fraction of (m - s)'s fraction * 2^(exponent(s) - exponent(m)), divided by two and the e(s) - e(m) + 1'th bit after the decimal set to a 1.  */
 double gDelta(double s, double m) {
-// 0.045 - 0.05
 	long int exp_m;
 	long int exp_d; //delta 1, "diff"
 	short sign_d; //Sign bit of delta
 	long int frac_d;
 	double d = m - s;
+	short IS_NEG_SHIFT = 0; //is the value "SH_AMT" negative? If so, we need
+							//to indicate this when encoding the delta.
 //	printf("m: %lf s: %lf d: %lf \n",m,s,d);
 	long int m_as_bits = * (long int *) &m;
     long int d_as_bits = * (long int *) &d;
@@ -106,12 +132,32 @@ double gDelta(double s, double m) {
 //	printf("exp_m: %ld, exp_d: %ld,",exp_m,exp_d);
 	exp_d = exp_d - exp_m;
 //	printf(" exp_d - exp_m: %ld,",exp_d);
-	/* Implement way to deal with exp_d2 >= 0. this only does for < 0 */
-    short SH_AMT = (-1) * exp_d + 1;
+	if (exp_d > 0) { //Was the magnitude of d greater than m?
+		exp_d *= -1;
+		NEG_SH_AMTS += exp_d;
+		NEG_COUNT++;	
+		IS_NEG_SHIFT = 1;
+	} else if (exp_d < 0) {
+		POS_SH_AMTS += exp_d;
+		POS_COUNT++;
+	} else {
+		ZERO_SHIFTS ++;
+	}
+    short SH_AMT = (-1) * exp_d + 2;
 	frac_d >>= SH_AMT; //Get exp_d2 + 1 leading zeros in the fraction
 //	printf(" SH_AMT: %d\n",SH_AMT);
 //	printBin("frac_d >> SH_AMT",frac_d);
-	frac_d = frac_d | (1L << (FRAC_WIDTH -  SH_AMT)); //Set new LS zero to 1.
+
+	/* Setting this bit indicates to the delta decoder where to "reshift"
+	 * the fraction back, also giving the data of how to successfully 
+	 * recover the exponent of (m - s). */
+	frac_d = frac_d | (1L << (FRAC_WIDTH -  SH_AMT + 1)); //Set new LS zero to 1.
+
+	/* Setting this bit indicates that  the difference was larger in magnitude 
+     * than the minuend, i.e., e(d) > e(m). This is needed in computing the 
+	 *minuend given the delta and subtrahend. */
+	if (IS_NEG_SHIFT) frac_d = frac_d | (1L << (FRAC_WIDTH - SH_AMT));
+
 //	printBin("frac_d with 1",frac_d);
 	d_as_bits &= (1L << 63); //zero out everything except the sign bit in delta
 	d_as_bits |= ((exp_m + BIAS) << 52); //set delta's exponent bits to m's
