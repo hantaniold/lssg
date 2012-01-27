@@ -6,17 +6,18 @@
 # for both decompression and compression.
 
 import os 
+import sys
 import time
 import math
 
-def benchmark(filename,compfile,logfile):
+def benchmark(filename,compfile,logfile,dataFolder):
 # ct = compression time
 # cl = compression level (table size in powers of 2 KB)
 	cls = map(str,[1,3,5,7,9,11,13,15,17,19,21,23,25])
 	for cl in cls:
 
 # Dataset name
-		ds = filename.lstrip("data/")
+		ds = filename.lstrip(dataFolder+"/")
 
 		print ds+" compressing, size "+cl+".....",
 		cmd = "cat "+filename+" | bin/fpc "+cl+" > "+compfile
@@ -53,12 +54,17 @@ def benchmark(filename,compfile,logfile):
 	
 
 # Main
+if (len(sys.argv) != 2) :
+  print "Usage: python benchmark.py  <DATA>"
+  exit(1)
+dataFolder = sys.argv[1]
 
 os.system("rm data/*.dc compressed-data/*")
 
-file_list = os.listdir("data")
-if not os.path.exists("data"):
-  print "Make the directory 'data' and stick the data to be compressed in it."
+
+file_list = os.listdir(dataFolder)
+if not os.path.exists(dataFolder):
+  print "Data folder "+dataFolder+" does not exist"
   exit(1)
 
 if not os.path.exists("bin/fpc"):
@@ -79,7 +85,7 @@ logfile.write("------------------------\n")
 logfile.write("NAME\t\t\t\tCT\t\tCTP\t\tDCS\t\tDT\t\tDTP\t\tCS\t\tTS\t\tCR\n")
 
 for f in file_list:	
-	benchmark("data/"+f,"compressed-data/"+f+".fpc",logfile)
+	benchmark("data/"+f,"compressed-data/"+f+".fpc",logfile,dataFolder)
 
 
 
