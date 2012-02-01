@@ -23,8 +23,8 @@ int main(int argc, char * argv[]) {
 	while ((retval = fscanf(fp, "%8c", buf)) != EOF) {
 //		printf("%c%c%c%c%c%c%c%c",buf[0],buf[1],buf[2],buf[3],buf[4],buf[5],buf[6],buf[7]);
         l = * (double *) buf;
-		if ((l < 0.0000000001 && l > 0) || 
-			(l > -0.0000000001 && l < 0)) {
+		if ((l < 0.0001 && l > 0) || 
+			(l > -0.0001 && l < 0)) {
 //            printf("a: %lf\n",ZERO);
 			fwrite(&ZERO,sizeof(double),1,outputFile);
 		} else {
