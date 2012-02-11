@@ -8,6 +8,7 @@
 /* Takes in two long-float data files in big endian order,
 ** and writes their bit-wise deltas to an output file. */
 
+//add pthreading
 
 #define EXP_MASK 2047 //0b11111111111
 #define FRAC_MASK (-1L ^ ((1L << 63) >> 11)) //0b00000000000011....
@@ -36,6 +37,8 @@ short DO_GN = 0; /* set = use single exponent for all nonzero deltas*/
 int GNE = 0; /* group norm exponent */ 
 short DO_FILTER = 0; /* Should we set a threshold to round to zero?*/
 int THRESHOLD_VALUE = 0;   /* Said threshold */
+int DIFF_BELOW_THRESHOLD = 0;
+long int NR_FILTERED = 0;
 
 double gDelta(double s, double m);
 void printBin(char * msg, long int x);
@@ -67,6 +70,7 @@ int main(int argc, char * argv[]) {
 		if (strcmp(argv[i], "-filter") == 0) {
 			DO_FILTER = 1;
 			sscanf(argv[i+1],"%d",&THRESHOLD_VALUE);
+			printf("%d\n",THRESHOLD_VALUE);
 	
 		}
 		i++;
@@ -78,27 +82,7 @@ int main(int argc, char * argv[]) {
 	double d1; //The 8 bytes of buf1 interpreted as a double
     double d2; 
 	double deltaLF;  //A delta computed between two numbers, in some fashion
-    long l1;
-    long l2;
-    long deltaLDF;
-    long deltaXOR;
 	while ((fscanf(fp1, "%8c", buf1) != EOF) && (fscanf(fp2, "%8c", buf2) != EOF )) {
-        if (strcmp(deltaType,"-lf") == 0) {
-			d1 = *((double *) buf1);
-			d2 = *((double *) buf2);
-			deltaLF = d2 - d1;
-		    fwrite(&deltaLF,sizeof(double),1,outputFile);
-        } else if (strcmp(deltaType,"-ldf") == 0) {
-            l1 = *((long *) buf1);
-			l2 = *((long *) buf2);
-			deltaLDF = (double) l2 - l1;
-			fwrite(&deltaLDF,sizeof(long),1,outputFile);
-        } else if (strcmp(deltaType,"-xor") == 0) {
-            l1 = *((long *) buf1);
-			l2 = *((long *) buf2);
-			deltaXOR =  l2 ^ l1;
-			fwrite(&deltaXOR,sizeof(long),1,outputFile);
-		} else {
 			d1 = *((double *) buf1);
 			d2 = *((double *) buf2);
 		/* writing 0 to the delta file signifies that d1 = d2, or 
@@ -128,20 +112,16 @@ int main(int argc, char * argv[]) {
 	 					NR_S_NEG_WHEN_BOTH_NONZERO++; }
 
 				}
-				if (DO_FILTER) {
-					if ((deltaLF < pow(10,THRESHOLD_VALUE) && deltaLF >= 0) || ((deltaLF > -1 * pow(10,THRESHOLD_VALUE)) && deltaLF < 0))	{
-						fwrite(&ZERO,sizeof(double),1,outputFile);
-					}
-					else {
-						fwrite(&deltaLF,sizeof(double),1,outputFile);
-					}
+				if (DIFF_BELOW_THRESHOLD) {
+					DIFF_BELOW_THRESHOLD = 0;
+					fwrite(&ZERO,sizeof(double),1,outputFile);
 				} else {					
 					fwrite(&deltaLF,sizeof(double),1,outputFile);
 				}
 			}
 			
 		}
-	}
+	
 	printf("SUBTRAHEND: %s\n",argv[1]);
 	printf("MINUEND: %s\n",argv[2]);
 	printf("DELTA WRITTEN TO %s\n",argv[3]);
@@ -159,7 +139,8 @@ int main(int argc, char * argv[]) {
 	printf("ZERO_SHIFTS: %ld\n",ZERO_SHIFTS);
 	printf("NR_S_ZERO: %ld\nNR_M_ZERO: %ld\nNR_BOTH_ZERO: %ld\n",NR_S_ZERO,NR_M_ZERO,NR_BOTH_ZERO);
 	printf("NR_M_POS_WHEN_S_ZERO: %ld\nNR_M_NEG_WHEN_S_ZERO: %ld \n",NR_M_POS_WHEN_S_ZERO,NR_M_NEG_WHEN_S_ZERO);
-	printf("TOTAL DOUBLES PARSED: %ld\n",(long int) (POS_COUNT+NEG_COUNT+ZERO_SHIFTS+NR_M_ZERO+NR_BOTH_ZERO));
+	printf("TOTAL DOUBLES PARSED: %ld\n",(long int) (POS_COUNT+NEG_COUNT+ZERO_SHIFTS+NR_M_ZERO+NR_BOTH_ZERO+NR_FILTERED));
+	printf("DIFFS ROUNDED TO ZERO: %ld\n",NR_FILTERED);
 	fclose(fp1);
 	fclose(fp2);
 	fclose(outputFile);		
@@ -174,6 +155,15 @@ double gDelta(double s, double m) {
 	short sign_d; //Sign bit of delta
 	long int frac_d;
 	double d = m - s;
+	if (DO_FILTER && 
+			(((d < pow(10,THRESHOLD_VALUE)) && (d >= 0)) || 
+			((d > -1 * pow(10,THRESHOLD_VALUE)) && d < 0))
+		) {
+		DIFF_BELOW_THRESHOLD = 1;
+		NR_FILTERED++;
+		return d;
+	}
+
 	short IS_NEG_SHIFT = 0; //is the value "SH_AMT" negative? If so, we need
 							//to indicate this when encoding the delta.
 //	printf("m: %lf s: %lf d: %lf \n",m,s,d);
@@ -230,7 +220,7 @@ double gDelta(double s, double m) {
 void printBin(char * msg, long int x) {
 
 	int i = 63;
-	while (i > 0) {
+	while (i >= 0) {
 		printf("%ld",(x>>i) & 1);
 		if (i == 63) printf("|");
 		if (i == 52) printf("|");
