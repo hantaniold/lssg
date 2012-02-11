@@ -1,2 +1,4 @@
+
 (1-24-12) Added various scripts/binaries made so far
 (1-27-12) Added things to correct dataset, working on delta
+(2-11-12) Initial delta implementation in place, benchmarking a little more general, pthreading beginning to be added to delta program.
