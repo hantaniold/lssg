@@ -169,7 +169,9 @@ double gDelta(double s, double m) {
 //	printf("m: %lf s: %lf d: %lf \n",m,s,d);
 	long int m_as_bits = * (long int *) &m;
     long int d_as_bits = * (long int *) &d;
+//	printBin("s_as_bits",* (long int *) &s);
 //	printBin("d_as_bits",d_as_bits);
+//	printBin("m_as_bits",m_as_bits);
 	frac_d = d_as_bits & FRAC_MASK;
 //	printBin("frac_d",frac_d);
 	if (DO_GN) { 
