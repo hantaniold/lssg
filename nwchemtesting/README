@@ -1,8 +1,0 @@
-test1.dat and test2.dat are the hexdumps of the `
-
-
-initial results...
-
-the delta thing works fine..i've tried deltas through:
-
-floating point representations, and long long representations. I must need to do something else to help Fpc, because fpc, and gfc, don't compress the data at all...
