@@ -1,4 +1,5 @@
 
+(2-24-12) Time to work on this finally. Added more of the infrastructure for the GA, seems to be a matter of implementing now
 (2-20-12) Abandon p-thread model in favor of GA. Recovery from delta implemented although will double check both forward/backward operations for validity. Beginning work on GA implementation that will go with nwchem
 (2-11-12) Initial delta implementation in place, benchmarking a little more general, pthreading beginning to be added to delta program.
 (1-27-12) Added things to correct dataset, working on delta

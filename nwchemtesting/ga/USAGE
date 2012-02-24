@@ -1,0 +1,6 @@
+
+configure, make, make install in ga source
+make flags output goes into GNUMakefile
+make the tutorial to compile the things you need.
+this to test:
+mpirun -np 2 -machinefile machines.txt ./transp1D-c.x
