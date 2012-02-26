@@ -48,6 +48,7 @@ struct gctx_t {
 struct gctx_t * gctx;
 void recoverMinuend(struct gctx_t * gctx);
 void computeDelta(struct gctx_t *gctx);
+void printBin(char * msg, long int x);
 
 int main(int argc, char * argv[]) {
 	int my_id, nprocs;
@@ -218,7 +219,7 @@ void computeDelta(struct gctx_t * gctx) {
 	short sign_d; //Sign bit of delta
 	long int frac_d;
 	double d;
-	short IS_NEG_SHIFT = 0; //is the value "SH_AMT" negative? If so, we need
+	short dExpIsGreater = 0; //is the value "SH_AMT" negative? If so, we need
 							//to indicate this when encoding the delta.
 	long int m_as_bits;
 	long int d_as_bits;
@@ -256,17 +257,15 @@ void computeDelta(struct gctx_t * gctx) {
 		m_as_bits = * (long int *) &m;
 	    d_as_bits = * (long int *) &d;
 		frac_d = d_as_bits & FRAC_MASK;
-	/*	if (DO_GN) { 
-			exp_m = GNE;
-		} else { */
 		exp_m =  ((m_as_bits >> FRAC_WIDTH) & EXP_MASK) - BIAS;
 	    exp_d = ((d_as_bits >> FRAC_WIDTH) & EXP_MASK) - BIAS;
 		exp_d = exp_d - exp_m;
 		if (exp_d > 0) { //Was the magnitude of d greater than m?
+			dExpIsGreater = 1;
 			exp_d *= -1;
 		}
 	    SH_AMT = (-1) * exp_d + 2;
-		frac_d >>= SH_AMT; //Get exp_d2 + 1 leading zeros in the fraction
+		frac_d >>= SH_AMT; //Make SH_AMT leading zeros in the fraction
 	
 		/* Setting this bit indicates to the delta decoder where to "reshift"
 		 * the fraction back, also giving the data of how to successfully 
@@ -276,7 +275,7 @@ void computeDelta(struct gctx_t * gctx) {
 		/* Setting this bit indicates that  the difference was larger in magnitude 
 	     * than the minuend, i.e., e(d) > e(m). This is needed in computing the 
 		 *minuend given the delta and subtrahend. */
-		if (IS_NEG_SHIFT) frac_d = frac_d | (1L << (FRAC_WIDTH - SH_AMT));
+		if (dExpIsGreater) frac_d = frac_d | (1L << (FRAC_WIDTH - SH_AMT));
 	
 		d_as_bits &= (1L << 63); //zero out everything except the sign bit in delta
 		d_as_bits |= ((exp_m + BIAS) << 52); //set delta's exponent bits to m's
@@ -306,6 +305,11 @@ void computeDelta(struct gctx_t * gctx) {
 	GA_Destroy(ga_out);	
 }
 
+
+/***************************************
+ ********** RECOVER MINUEND ***********
+ **************************************
+ **************************************/
 void recoverMinuend(struct gctx_t *gctx) {
 	int my_id = GA_Nodeid();
 	int nrProcs = GA_Nnodes();
@@ -416,6 +420,7 @@ void recoverMinuend(struct gctx_t *gctx) {
 			}
 		}
 		dDelBits = *((long int *) &dDel);
+	
 
 		dDelBits = dDelBits & FRAC_MASK;
 		dDelBits <<= 12;
@@ -438,7 +443,8 @@ void recoverMinuend(struct gctx_t *gctx) {
 		
 		dDelBits = *((long int *) &dDel);
 		dDelBits &= FRAC_MASK;
-		fd = dDelBits << (shamt + 1);
+		fd = dDelBits << (shamt + 2);
+		fd &= FRAC_MASK; //Eliminates possible 1s that pop up after LS
 		
 		dDelBits = *((long int *) &dDel);
 		dDelBits &= MSB_MASK;
@@ -466,4 +472,17 @@ void recoverMinuend(struct gctx_t *gctx) {
 	GA_Destroy(ga_del);
 	GA_Destroy(ga_out);
 	GA_Destroy(ga_sub);
+}
+
+void printBin(char * msg, long int x) {
+
+	int i = 63;
+	while (i >= 0) {
+		printf("%ld",(x>>i) & 1);
+		if (i == 63) printf("|");
+		if (i == 52) printf("|");
+		i--;
+	}
+	printf(": %s ",msg);
+	printf("\n");
 }
