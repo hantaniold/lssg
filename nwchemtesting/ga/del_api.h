@@ -23,6 +23,7 @@ struct del_t {
     FILE * subFP;
     FILE * minFP;
     FILE * delFP;
+    FILE * outFP;
 
     float thresholdExp;
     int doFilter;
@@ -44,6 +45,7 @@ int computeDeltaFromMemToDisk(int subHandle, int minHandle, unsigned long int si
 /* Takes the GA subHandle and recovers the checkpoint ahead of it, 
  * recalculted using the on-disk delta file whose name is "delName".
  * 
- * Returns a handle to the recovered subtrahend checkpoint  */
-int recoverDeltaFromDiskToMem(int subHandle, unsigned long int size, char * delName); 
+ * Returns a handle to the recovered subtrahend checkpoint
+ * Throws a GA error on failure */
+int recoverFromDiskToMem(int subHandle, unsigned long int size, char * delName); 
 #endif

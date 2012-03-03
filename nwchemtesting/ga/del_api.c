@@ -25,12 +25,12 @@
 
 int doCompress(double * ds, unsigned long int size, FILE * outFile, int level);
 int doDecompress(char * cs, unsigned long int sizeIn, unsigned long int sizeOut, char * outDs);
-int recoverMinuend(struct gctx_t * gctx);
-int computeDelta(struct gctx_t *gctx);
+int recoverMinuend(struct del_t * gctx);
+int computeDelta(struct del_t *gctx);
 void printBin(char * msg, long int x);
 
 
-int computeDeltaFromMemToDisk(int subHandle, int minHandle, unsigned long int size, char * delName, int doFilter, float thresholdExp, unsigned long int heapSize, unsigned long int stackSize) {
+int computeDeltaFromMemToDisk(int subHandle, int minHandle, unsigned long int size, char * delName, int doFilter, float thresholdExp) {
 
 	int my_id, nprocs;
 	struct del_t * gctx = calloc(1,sizeof(struct del_t));
@@ -38,19 +38,48 @@ int computeDeltaFromMemToDisk(int subHandle, int minHandle, unsigned long int si
     gctx->minHandle = minHandle;
     gctx->subSize = size;
     gctx->minSize = size;
-    strcpy(delName,gctx->delName);
+    gctx->delName = calloc(1,strlen(delName));
+    strcpy(gctx->delName,delName);
     gctx->doFilter = doFilter;
     gctx->thresholdExp = thresholdExp;
     
-    int heap = heapSize, stack = stackSize;
 	
 	my_id = GA_Nodeid();
 	nprocs = GA_Nnodes();
 	if (my_id == 0) {
-		printf("\n=== Using %d processes\n\n",nprocs); fflush(stdout);
+        printf("====================================================");
+		printf("\n=== Using %d processes in computeDeltaFromMemToDisk\n",nprocs); 
+        printf("====================================================\n");
 	}
 
 	return computeDelta(gctx);
+}
+
+int recoverFromDiskToMem(int subHandle, unsigned long int size, char * delName) {
+    int my_id = GA_Nodeid();
+    int nprocs = GA_Nnodes();
+    if (my_id == 0) {
+        printf("\n=======================================\n");
+        printf("=== Using %d processes in recoverFromDiskToMem\n",nprocs); 
+        printf("=======================================\n");
+    }
+    struct del_t * gctx = calloc(1, sizeof(struct del_t));
+    gctx->subHandle = subHandle;
+    gctx->subSize = size;
+    gctx->delName = calloc(1, strlen(delName));
+    strcpy(gctx->delName,delName);
+    gctx->delFP = fopen(gctx->delName,"r");
+    
+    struct stat * delStat = calloc(1, sizeof(struct stat));
+    fstat(fileno(gctx->delFP),delStat);
+    gctx->delSize =  delStat->st_size;
+
+    int minHandle =  recoverMinuend(gctx);
+    if (my_id == 0) {
+        printf("=== Recovered min handle is %d\n",minHandle);
+    }
+
+    return minHandle;
 }
 
 /************************************
@@ -60,20 +89,22 @@ int computeDelta(struct del_t * gctx) {
 	int my_id = GA_Nodeid();
 	int nrProcs = GA_Nnodes();
 
+
 	int dims[1], chunk[1];
     int ga_min = gctx->minHandle;
     int ga_sub = gctx->subHandle;
-    int ga_del = gctx->delHandle;
+    int ga_del;
     
 	dims[0] = gctx->minSize/8;
 	chunk[0] = dims[0]/nrProcs - 1;
+    ga_del = NGA_Create(C_DBL,1, dims, "Delta array", chunk);
 	
 	GA_Sync();
 
 	if (my_id == 0) printf("=== Transferring global doubles to local arrays.\n");
 /* Move global doubles to local arrays */ 
 	int lo[1], hi[1];
-	NGA_Distribution(ga_out, my_id, lo,hi);
+	NGA_Distribution(ga_del, my_id, lo,hi);
 	int stride[1]; stride[0] = hi[0] - lo[0] + 1;
 	
 	double * localMinDoubles = calloc(stride[0],sizeof(double));
@@ -102,7 +133,7 @@ int computeDelta(struct del_t * gctx) {
 	short SH_AMT;
 	long NEG_ZERO = 1L << 63;
 
-	printf("=== Processor %d entering delta computation\n",my_id);	
+	printf("<%d> Processor %d entering delta computation\n",my_id,my_id);	
 	for (j = 0; j < stride[0]; j++) {
 	
 		m = localMinDoubles[j];
@@ -115,7 +146,8 @@ int computeDelta(struct del_t * gctx) {
 	
 		//Write a -0 if s is nonzero but m is 0.
 		if (m == 0 && s != 0) {
-			localOutDoubles[j] = NEG_ZERO;
+            long int negzero = 1L << 63;
+			localOutDoubles[j] = * (double *) &negzero;
 			continue;
 		}
 		//Compute a normal subtraction difference.
@@ -126,6 +158,7 @@ int computeDelta(struct del_t * gctx) {
 				(((d < pow(10,gctx->thresholdExp)) && (d >= 0)) || 
 				((d > -1 * pow(10,gctx->thresholdExp)) && d < 0))
 			) {
+            
 			localOutDoubles[j] = 0;
 			continue;
 		}
@@ -139,7 +172,9 @@ int computeDelta(struct del_t * gctx) {
 		if (exp_d > 0) { //Was the magnitude of d greater than m?
 			dExpIsGreater = 1;
 			exp_d *= -1;
-		}
+		} else {
+            dExpIsGreater = 0;
+        }
 	    SH_AMT = (-1) * exp_d + 2;
 		frac_d >>= SH_AMT; //Make SH_AMT leading zeros in the fraction
 	
@@ -151,7 +186,11 @@ int computeDelta(struct del_t * gctx) {
 		/* Setting this bit indicates that  the difference was larger in magnitude 
 	     * than the minuend, i.e., e(d) > e(m). This is needed in computing the 
 		 *minuend given the delta and subtrahend. */
-		if (dExpIsGreater) frac_d = frac_d | (1L << (FRAC_WIDTH - SH_AMT));
+		if (dExpIsGreater) { 
+            frac_d = frac_d | (1L << (FRAC_WIDTH - SH_AMT));
+        } else {
+            frac_d = frac_d & ~(1L << (FRAC_WIDTH - SH_AMT));
+        }
 	
 		d_as_bits &= (1L << 63); //zero out everything except the sign bit in delta
 		d_as_bits |= ((exp_m + BIAS) << 52); //set delta's exponent bits to m's
@@ -160,7 +199,7 @@ int computeDelta(struct del_t * gctx) {
 		localOutDoubles[j] = d;
 	}
 
-	printf("=== Processor %d computed %ld deltas.\n",my_id,j);
+	printf("<%d> Processor %d computed %ld deltas.\n",my_id,my_id,j);
 	//Combine local buffer into global array.
 	if (my_id == 0) printf("=== Moving computed deltas to global array.\n");
 	NGA_Put(ga_del, lo, hi, localOutDoubles, stride);
@@ -169,13 +208,18 @@ int computeDelta(struct del_t * gctx) {
 	if (my_id == 0) {
 		double * outDoubles = calloc(dims[0],sizeof(double));
 		lo[0] = 0; hi[0] = dims[0] - 1; stride[0] = dims[0];
-		NGA_Get(ga_out, lo, hi, outDoubles, stride);
-        if (doCompress(outDoubles,dims[0],gctx->outFP, Z_DEFAULT_COMPRESSION) != Z_OK) 
+		NGA_Get(ga_del, lo, hi, outDoubles, stride);
+        gctx->delFP = fopen(gctx->delName,"w");
+        int i;
+        if (doCompress(outDoubles,dims[0],gctx->delFP, Z_DEFAULT_COMPRESSION) != Z_OK)  {
             printf("=== COMPRESSION ERROR???\n");
+            return -1;
+        }
+        fclose(gctx->delFP);
 	}
 	if (my_id == 0) printf("Deltas written to %s.\n",gctx->delName);
 
-	GA_Destroy(ga_out);	
+	GA_Destroy(ga_del);	
 
     return 0; //Success!
 }
@@ -186,42 +230,25 @@ int computeDelta(struct del_t * gctx) {
  **************************************
  **************************************/
 
-int recoverMinuend(struct gctx_t *gctx) {
+int recoverMinuend(struct del_t * gctx) {
 	int my_id = GA_Nodeid();
 	int nrProcs = GA_Nnodes();
+    int ga_sub = gctx->subHandle;
+    int ga_min, ga_del;
+    int dims[1]; dims[0] = gctx->subSize/8;
+    int chunk[1]; chunk[0] = dims[0]/nrProcs - 1;
+    ga_min = NGA_Create(C_DBL, 1, dims, "Recovered minuend array", chunk);
+    if (!ga_min) GA_Error("failed to make output min array",1);
+    if (my_id == 0) printf("=== Created output min array\n");
+    ga_del = GA_Duplicate(ga_sub,"Delta array");
+    if (!ga_del) GA_Error("failed to make input delta array",1);
+    if (my_id == 0) printf("=== Created delta array\n");
 
-/* Find file sizes */
-	struct stat * delStat = calloc(1,sizeof(struct stat));
-	struct stat * subStat = calloc(1,sizeof(struct stat));
-	fstat(fileno(gctx->delFP),delStat);
-	fstat(fileno(gctx->subFP),subStat);
-	if (my_id == 0) {
-		printf("Delta size: %ld\n",delStat->st_size);
-		printf("Subtrahend size: %ld\n",subStat->st_size);
-	}
-	gctx->delSize = delStat->st_size;
-	gctx->subSize = subStat->st_size;
-	
 
-/* Create the global arrays */
-	int dims[1], chunk[1];
-	int ga_del, ga_sub, ga_out;
 
-	dims[0] = gctx->subSize/8;
-	chunk[0] = dims[0]/nrProcs - 1;
-	ga_del = NGA_Create(C_DBL, 1, dims, "Delta Array", chunk);
-	if (!ga_del) GA_Error("Failure to create minuend array", 1);
-	if (my_id == 0) printf("=== Created Minuend Array.\n");
-	ga_sub = GA_Duplicate(ga_del,"Subtrahend Array");
-	ga_out = GA_Duplicate(ga_del,"Output Array");
-
-	if (!ga_sub) GA_Error("duplicating del -> sub failed.",1);
-	if (!ga_out) GA_Error("duplicating del -> out failed.",1);
-	if (my_id == 0) printf("=== Created Subtrahend and Output Array.\n");
-	
-	
 /* Read the minuend and subtrahend into local buffers, copy this to global array.
  * Maybe split to two processors o_O */
+    
 	if (my_id == 0) {
 		int globalStride[1];
 		globalStride[0] = dims[0];
@@ -231,23 +258,13 @@ int recoverMinuend(struct gctx_t *gctx) {
 		double * delDoubles = calloc(dims[0],sizeof(double));
         int ret = doDecompress(compDel, gctx->delSize, gctx->subSize,(char *) delDoubles);
         if (ret != Z_OK) 
-            return -1;
-		double * subDoubles = calloc(dims[0],sizeof(double));
-		unsigned long int i = 0;
-		char * subBuf = (char *) malloc(8);
-		printf("=== Filling sub array on processor %d\n",my_id);
-		while (fscanf(gctx->subFP, "%8c", subBuf) != EOF) {
-			subDoubles[i] = *((double *) subBuf);
-			i++;
-		}	
-		if (i != dims[0]) GA_Error("Did not read as many doubles as expected from subtrahend",1);
+            GA_Error("Trouble decompressing the delta file.\n",1);
 		printf("=== Filled del/sub arrays on processor %d\n",my_id);
 		int lo[1]; lo[0] = 0;
 		int hi[1]; hi[0] = dims[0] - 1;
-		NGA_Put(ga_sub, lo, hi, subDoubles, globalStride);
 		NGA_Put(ga_del, lo, hi, delDoubles, globalStride);
-		free(subDoubles);
 		free(delDoubles);
+        free(compDel);
 	}
 
 
@@ -256,7 +273,7 @@ int recoverMinuend(struct gctx_t *gctx) {
 	if (my_id == 0) printf("=== Transferring global doubles to local arrays.\n");
 /* Move global doubles to local arrays */ 
 	int lo[1], hi[1];
-	NGA_Distribution(ga_out, my_id, lo,hi);
+	NGA_Distribution(ga_del, my_id, lo,hi);
 	int stride[1]; stride[0] = hi[0] - lo[0] + 1;
 	
 	double * localDelDoubles = calloc(stride[0],sizeof(double));
@@ -280,12 +297,13 @@ int recoverMinuend(struct gctx_t *gctx) {
 	double * localOutDoubles = calloc(stride[0], sizeof(double));
 
 	int j = 0;
-	printf("=== Processor %d entering recovery\n",my_id);
+	printf("<%d> Processor %d entering recovery\n",my_id,my_id);
 	for (j = 0; j < stride[0]; j++) {
 		dDel = localDelDoubles[j];
 		dSub = localSubDoubles[j];
 		if (dDel == 0) {
-			if (dDel && MSB_MASK) {
+            long int dDelBits = * (long int *) &(localDelDoubles[j]);
+			if (dDelBits && MSB_MASK) {
 				localOutDoubles[j] = 0;
 				continue;
 			} else {
@@ -303,7 +321,10 @@ int recoverMinuend(struct gctx_t *gctx) {
 			shamt++;
 			dDelBits <<= 1;	
 		}
-		ed_MINUS_em_isPOS = ((dDelBits << 1) & MSB_MASK > 0);
+        ed_MINUS_em_isPOS = 0;
+        if (((dDelBits << 1) & MSB_MASK) < 0) {
+            ed_MINUS_em_isPOS = 1;
+        } 
 		if (ed_MINUS_em_isPOS) {
 			ed_MINUS_em = shamt;
 		} else { 
@@ -328,25 +349,22 @@ int recoverMinuend(struct gctx_t *gctx) {
 		localOutDoubles[j] = dMin;
 	}
 	
-	printf("=== Processor %d recovered %d doubles.\n",my_id,j);
+	printf("<%d> Processor %d recovered %d doubles.\n",my_id,my_id,j);
 	if (my_id == 0) printf("=== Moving recovered minuend values to global array.\n");
-	NGA_Put(ga_out, lo, hi, localOutDoubles, stride);
+	NGA_Put(ga_min, lo, hi, localOutDoubles, stride);
 	GA_Sync();
-	if (my_id == 0) {
+	GA_Destroy(ga_del);
+    return ga_min; //Return handle to the recovered GA
+    // If necessary, we could write it to file.
+	/*if (my_id == 0) {
 		double * outDoubles = calloc(dims[0],sizeof(double));
 		lo[0] = 0; hi[0] = dims[0] - 1; stride[0] = dims[0];
-		NGA_Get(ga_out, lo, hi, outDoubles, stride);
+		NGA_Get(ga_min, lo, hi, outDoubles, stride);
 		for (j = 0; j < dims[0]; j++) {
 			fwrite(&(outDoubles[j]), sizeof(double), 1, gctx->outFP);
 		}
 	}
-	if (my_id == 0) printf("=== Subtrahend doubles written to specified output file.\n");
-
-
-	GA_Destroy(ga_del);
-	GA_Destroy(ga_out);
-	GA_Destroy(ga_sub);
-    return 0;
+	if (my_id == 0) printf("=== Subtrahend doubles written to specified output file.\n");*/
 }
 
 void printBin(char * msg, long int x) {
