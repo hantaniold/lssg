@@ -301,7 +301,7 @@ int recoverMinuend(struct del_t * gctx) {
 	for (j = 0; j < stride[0]; j++) {
 		dDel = localDelDoubles[j];
 		dSub = localSubDoubles[j];
-		if (dDel == 0) {
+		if (dDel == 0 || dDel == (1L << 63)) {
             long int dDelBits = * (long int *) &(localDelDoubles[j]);
 			if (dDelBits && MSB_MASK) {
 				localOutDoubles[j] = 0;

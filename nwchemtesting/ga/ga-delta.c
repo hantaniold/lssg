@@ -241,7 +241,8 @@ int computeDelta(struct gctx_t * gctx) {
 	
 		//Write a -0 if s is nonzero but m is 0.
 		if (m == 0 && s != 0) {
-			localOutDoubles[j] = NEG_ZERO;
+		    long int negzero = 1L << 63;
+			localOutDoubles[j] = * (double *) &negzero;
 			continue;
 		}
 		//Compute a normal subtraction difference.
@@ -265,7 +266,9 @@ int computeDelta(struct gctx_t * gctx) {
 		if (exp_d > 0) { //Was the magnitude of d greater than m?
 			dExpIsGreater = 1;
 			exp_d *= -1;
-		}
+		} else {
+            dExpIsGreater = 0;
+        }
 	    SH_AMT = (-1) * exp_d + 2;
 		frac_d >>= SH_AMT; //Make SH_AMT leading zeros in the fraction
 	
@@ -277,8 +280,11 @@ int computeDelta(struct gctx_t * gctx) {
 		/* Setting this bit indicates that  the difference was larger in magnitude 
 	     * than the minuend, i.e., e(d) > e(m). This is needed in computing the 
 		 *minuend given the delta and subtrahend. */
-		if (dExpIsGreater) frac_d = frac_d | (1L << (FRAC_WIDTH - SH_AMT));
-	
+	    if (dExpIsGreater) { 
+            frac_d = frac_d | (1L << (FRAC_WIDTH - SH_AMT));
+        } else {
+            frac_d = frac_d & ~(1L << (FRAC_WIDTH - SH_AMT));
+        }
 		d_as_bits &= (1L << 63); //zero out everything except the sign bit in delta
 		d_as_bits |= ((exp_m + BIAS) << 52); //set delta's exponent bits to m's
 		d_as_bits |= (frac_d); //set delta's fraction bits.
@@ -410,12 +416,14 @@ int recoverMinuend(struct gctx_t *gctx) {
 	double * localOutDoubles = calloc(stride[0], sizeof(double));
 
 	int j = 0;
-	printf("=== Processor %d entering recovery\n",my_id);
+	printf("=== Processor %d entering recovery for %d vals\n",my_id,stride[0]);
 	for (j = 0; j < stride[0]; j++) {
 		dDel = localDelDoubles[j];
 		dSub = localSubDoubles[j];
-		if (dDel == 0) {
-			if (dDel && MSB_MASK) {
+//If the delta is 0 or negative zero deal the right way
+    	if (dDel == 0 || dDel == (1L << 63)) {
+            long int dDelBits = * (long int *) &(localDelDoubles[j]);
+			if (dDelBits && MSB_MASK) {
 				localOutDoubles[j] = 0;
 				continue;
 			} else {
@@ -423,6 +431,7 @@ int recoverMinuend(struct gctx_t *gctx) {
 				continue;
 			}
 		}
+
 		dDelBits = *((long int *) &dDel);
 	
 
@@ -433,7 +442,10 @@ int recoverMinuend(struct gctx_t *gctx) {
 			shamt++;
 			dDelBits <<= 1;	
 		}
-		ed_MINUS_em_isPOS = ((dDelBits << 1) & MSB_MASK > 0);
+        ed_MINUS_em_isPOS = 0;
+        if (((dDelBits << 1) & MSB_MASK) < 0) {
+            ed_MINUS_em_isPOS = 1;
+        } 
 		if (ed_MINUS_em_isPOS) {
 			ed_MINUS_em = shamt;
 		} else { 

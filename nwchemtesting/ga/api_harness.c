@@ -64,7 +64,7 @@ int main(int argc, char ** argv) {
     int i = 0;
     NGA_Get(ga_del, lo, hi, recoveredVals, dims); 
     for (i = 0; i < dims[0]; i++) {
-        if (my_id == 0) printf("val %d: %lf\n", i, recoveredVals[i]);
+        if (my_id == 0) printf("val %d: %lf expect (if no threshold): %lf\n", i, recoveredVals[i],min[i]);
     }
        
     GA_Destroy(ga_min);
