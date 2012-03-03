@@ -49,7 +49,8 @@ struct gctx_t {
 
 struct gctx_t * gctx;
 int doCompress(double * ds, unsigned long int size, FILE * outFile, int level);
-void recoverMinuend(struct gctx_t * gctx);
+int doDecompress(char * cs, unsigned long int sizeIn, unsigned long int sizeOut, char * outDs);
+int recoverMinuend(struct gctx_t * gctx);
 int computeDelta(struct gctx_t *gctx);
 void printBin(char * msg, long int x);
 
@@ -315,7 +316,7 @@ int computeDelta(struct gctx_t * gctx) {
  ********** RECOVER MINUEND ***********
  **************************************
  **************************************/
-void recoverMinuend(struct gctx_t *gctx) {
+int recoverMinuend(struct gctx_t *gctx) {
 	int my_id = GA_Nodeid();
 	int nrProcs = GA_Nnodes();
 
@@ -328,7 +329,6 @@ void recoverMinuend(struct gctx_t *gctx) {
 		printf("Delta size: %ld\n",delStat->st_size);
 		printf("Subtrahend size: %ld\n",subStat->st_size);
 	}
-	if (delStat->st_size != subStat->st_size) GA_Error("Error: Delta and Subtrahend not same size", 1);	
 	gctx->delSize = delStat->st_size;
 	gctx->subSize = subStat->st_size;
 	
@@ -337,7 +337,7 @@ void recoverMinuend(struct gctx_t *gctx) {
 	int dims[1], chunk[1];
 	int ga_del, ga_sub, ga_out;
 
-	dims[0] = gctx->delSize/8;
+	dims[0] = gctx->subSize/8;
 	chunk[0] = dims[0]/nrProcs - 1;
 	ga_del = NGA_Create(C_DBL, 1, dims, "Delta Array", chunk);
 	if (!ga_del) GA_Error("Failure to create minuend array", 1);
@@ -355,23 +355,25 @@ void recoverMinuend(struct gctx_t *gctx) {
 	if (my_id == 0) {
 		int globalStride[1];
 		globalStride[0] = dims[0];
+        char * compDel = calloc(gctx->delSize, sizeof(char));
+        unsigned long int read = fread(compDel, 1, gctx->delSize, gctx->delFP);
+        printf("=== Read %ld bytes from compressed delta.\n",read);
 		double * delDoubles = calloc(dims[0],sizeof(double));
-		
+        int ret = doDecompress(compDel, gctx->delSize, gctx->subSize,(char *) delDoubles);
+        if (ret != Z_OK) 
+            return -1;
 		double * subDoubles = calloc(dims[0],sizeof(double));
 		unsigned long int i = 0;
-		char * buf1 = (char *) malloc(8);
-		char * buf2 = (char *) malloc(8);
-		printf("=== Filling del/sub array on processor %d\n",my_id);
-		while (fscanf(gctx->delFP,"%8c", buf1) != EOF && fscanf(gctx->subFP, "%8c", buf2) != EOF) {
-			delDoubles[i] = *((double *) buf1);
-			subDoubles[i] = *((double *) buf2);
+		char * subBuf = (char *) malloc(8);
+		printf("=== Filling sub array on processor %d\n",my_id);
+		while (fscanf(gctx->subFP, "%8c", subBuf) != EOF) {
+			subDoubles[i] = *((double *) subBuf);
 			i++;
 		}	
 		if (i != dims[0]) GA_Error("Did not read as many doubles as expected from subtrahend",1);
 		printf("=== Filled del/sub arrays on processor %d\n",my_id);
 		int lo[1]; lo[0] = 0;
 		int hi[1]; hi[0] = dims[0] - 1;
-		printf("Hi from line 183\n");
 		NGA_Put(ga_sub, lo, hi, subDoubles, globalStride);
 		NGA_Put(ga_del, lo, hi, delDoubles, globalStride);
 		free(subDoubles);
@@ -408,7 +410,7 @@ void recoverMinuend(struct gctx_t *gctx) {
 	double * localOutDoubles = calloc(stride[0], sizeof(double));
 
 	int j = 0;
-	printf("proc %d entering recovery\n",my_id);
+	printf("=== Processor %d entering recovery\n",my_id);
 	for (j = 0; j < stride[0]; j++) {
 		dDel = localDelDoubles[j];
 		dSub = localSubDoubles[j];
@@ -456,7 +458,7 @@ void recoverMinuend(struct gctx_t *gctx) {
 		localOutDoubles[j] = dMin;
 	}
 	
-	printf("Proc %d computed %d deltas.\n",my_id,j);
+	printf("=== Processor %d recovered %d doubles.\n",my_id,j);
 	if (my_id == 0) printf("=== Moving recovered minuend values to global array.\n");
 	NGA_Put(ga_out, lo, hi, localOutDoubles, stride);
 	GA_Sync();
@@ -468,12 +470,13 @@ void recoverMinuend(struct gctx_t *gctx) {
 			fwrite(&(outDoubles[j]), sizeof(double), 1, gctx->outFP);
 		}
 	}
-	if (my_id == 0) printf("Deltas written to specified output file.\n");
+	if (my_id == 0) printf("=== Subtrahend doubles written to specified output file.\n");
 
 
 	GA_Destroy(ga_del);
 	GA_Destroy(ga_out);
 	GA_Destroy(ga_sub);
+    return 0;
 }
 
 void printBin(char * msg, long int x) {
@@ -499,7 +502,7 @@ int doCompress(double * ds,unsigned long int size, FILE * outFile, int level) {
     /* Need to compensate for elts being 8 bytes long*/
     size = sizeof(double) * size;
     int ret, flush;
-    unsigned have;
+    unsigned long int have;
     z_stream strm;
     unsigned char * in = (char *) ds; 
     unsigned char * out = calloc(size,sizeof(unsigned char)); 
@@ -525,20 +528,44 @@ int doCompress(double * ds,unsigned long int size, FILE * outFile, int level) {
 }
 
 
+/* "sizeOut" should be the size in bytes of the subtrahend array that 
+ *  we're using as a base for recovery. 
+ * "sizeIn" is the size of the input delta file. */
+int doDecompress(char * cs, unsigned long int sizeIn, unsigned long int sizeOut, char * outDs) {
+    int ret;
+    unsigned have;
+    z_stream strm;
+    
+    strm.zalloc = Z_NULL;
+    strm.zfree = Z_NULL;
+    strm.opaque = Z_NULL;
+    strm.avail_in = 0;
+    strm.next_in = Z_NULL;
+    ret = inflateInit(&strm);
+    if (ret != Z_OK) 
+        return ret;
 
+    strm.avail_in = sizeIn;
+    strm.next_in = cs;
+    strm.avail_out = sizeOut;
+    strm.next_out = outDs;
+    ret = inflate(&strm, Z_NO_FLUSH);
 
+    assert(ret != Z_STREAM_ERROR);
+    switch (ret) {
+    case Z_NEED_DICT:
+        ret = Z_DATA_ERROR;
+    case Z_DATA_ERROR:
+    case Z_MEM_ERROR:
+        (void) inflateEnd(&strm);
+        return ret; 
+    }
+    have = sizeOut - strm.avail_out;
+    printf("=== Decompressed size: %u\n",have);
+    assert(have == sizeOut);
 
-
-
-
-
-
-
-
-
-
-
-
-
-
+    /* Cast the decompressed byte array back into doubles */
+    (void) inflateEnd(&strm);
+    return Z_OK;
+}
 
