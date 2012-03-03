@@ -43,7 +43,7 @@ struct gctx_t {
 	unsigned long int minSize;
 	unsigned long int subSize;
 	unsigned long int delSize;
-	int thresholdExp;
+	double thresholdExp;
 	int doFilter;
 };
 
@@ -81,8 +81,8 @@ int main(int argc, char * argv[]) {
 		switch (opt) {
 		case 'f':
 			gctx->doFilter = 1;
-			sscanf(optarg, "%d", &(gctx->thresholdExp));
-			if (my_id == 0) printf("=== Using a cutoff of 10^%d\n",gctx->thresholdExp);
+			sscanf(optarg, "%lf", &(gctx->thresholdExp));
+			if (my_id == 0) printf("=== Using a cutoff of 10^%lf\n",gctx->thresholdExp);
             break;
 		case 'r':
 			doRecover++;
