@@ -6,6 +6,8 @@
 #include <sys/stat.h>
 #include "ga.h"
 #include "macdecls.h"
+#include "zlib.h"
+#include "assert.h"
 
 #ifdef MPI
 #include <mpi.h>
@@ -46,8 +48,9 @@ struct gctx_t {
 };
 
 struct gctx_t * gctx;
+int doCompress(double * ds, unsigned long int size, FILE * outFile, int level);
 void recoverMinuend(struct gctx_t * gctx);
-void computeDelta(struct gctx_t *gctx);
+int computeDelta(struct gctx_t *gctx);
 void printBin(char * msg, long int x);
 
 int main(int argc, char * argv[]) {
@@ -66,7 +69,7 @@ int main(int argc, char * argv[]) {
 	my_id = GA_Nodeid();
 	nprocs = GA_Nnodes();
 	if (my_id == 0) {
-		printf("\nUsing %d processes\n\n",nprocs); fflush(stdout);
+		printf("\n=== Using %d processes\n\n",nprocs); fflush(stdout);
 	}
 
 	/* Parse args and determine whether to recover a minuend, or compute a delta. */
@@ -78,7 +81,8 @@ int main(int argc, char * argv[]) {
 		case 'f':
 			gctx->doFilter = 1;
 			sscanf(optarg, "%d", &(gctx->thresholdExp));
-			if (my_id == 0) printf("Using a cutoff of 10^%d\n",gctx->thresholdExp);
+			if (my_id == 0) printf("=== Using a cutoff of 10^%d\n",gctx->thresholdExp);
+            break;
 		case 'r':
 			doRecover++;
 			break;
@@ -108,14 +112,11 @@ int main(int argc, char * argv[]) {
 	if (doRecover) {
 		recoverMinuend(gctx);
 	} else {
-	
-		computeDelta(gctx);
+	    int res = computeDelta(gctx);
 	}
-	
-	//something();
 
 	if (my_id == 0) 
-		printf("\nTerminating.\n");
+		printf("=== Terminating.\n");
 	GA_Terminate();
 
 #ifdef MPI
@@ -125,7 +126,10 @@ int main(int argc, char * argv[]) {
 #endif
 }
 
-void computeDelta(struct gctx_t * gctx) {
+/************************************
+ ************ COMPUTE DELTA *********
+ ************************************/
+int computeDelta(struct gctx_t * gctx) {
 	int my_id = GA_Nodeid();
 	int nrProcs = GA_Nnodes();
 
@@ -138,6 +142,7 @@ void computeDelta(struct gctx_t * gctx) {
 		printf("Minuend size: %ld\n",minStat->st_size);
 		printf("Subtrahend size: %ld\n",subStat->st_size);
 	}
+
 	if (minStat->st_size != subStat->st_size) GA_Error("Error: Minuend and Subtrahend not same size", 1);	
 	gctx->minSize = minStat->st_size;
 	gctx->subSize = subStat->st_size;
@@ -165,10 +170,7 @@ void computeDelta(struct gctx_t * gctx) {
 	if (my_id == 0) {
 		int globalStride[1];
 		globalStride[0] = dims[0];
-		printf("Hi from %d\n",my_id);
-		printf("%d\n",dims[0]);
 		double * minDoubles = calloc(dims[0],sizeof(double));
-		printf("%d\n",dims[0]);
 		
 		double * subDoubles = calloc(dims[0],sizeof(double));
 		unsigned long int i = 0;
@@ -184,7 +186,6 @@ void computeDelta(struct gctx_t * gctx) {
 		printf("=== Filled min/sub arrays on processor %d\n",my_id);
 		int lo[1]; lo[0] = 0;
 		int hi[1]; hi[0] = dims[0] - 1;
-		printf("Hi from line 183\n");
 		NGA_Put(ga_sub, lo, hi, subDoubles, globalStride);
 		NGA_Put(ga_min, lo, hi, minDoubles, globalStride);
 		free(subDoubles);
@@ -226,7 +227,7 @@ void computeDelta(struct gctx_t * gctx) {
 	short SH_AMT;
 	long NEG_ZERO = 1L << 63;
 
-	printf("proc %d entering delta comp\n",my_id);	
+	printf("=== Processor %d entering delta computation\n",my_id);	
 	for (j = 0; j < stride[0]; j++) {
 	
 		m = localMinDoubles[j];
@@ -284,7 +285,7 @@ void computeDelta(struct gctx_t * gctx) {
 		localOutDoubles[j] = d;
 	}
 
-	printf("Proc %d computed %ld deltas.\n",my_id,j);
+	printf("=== Processor %d computed %ld deltas.\n",my_id,j);
 	//Combine local buffer into global array.
 	if (my_id == 0) printf("=== Moving computed deltas to global array.\n");
 	NGA_Put(ga_out, lo, hi, localOutDoubles, stride);
@@ -294,15 +295,19 @@ void computeDelta(struct gctx_t * gctx) {
 		double * outDoubles = calloc(dims[0],sizeof(double));
 		lo[0] = 0; hi[0] = dims[0] - 1; stride[0] = dims[0];
 		NGA_Get(ga_out, lo, hi, outDoubles, stride);
-		for (j = 0; j < dims[0]; j++) {
-			fwrite(&(outDoubles[j]), sizeof(double), 1, gctx->outFP);
-		}
+        if (doCompress(outDoubles,dims[0],gctx->outFP, Z_DEFAULT_COMPRESSION) != Z_OK) 
+            printf("=== COMPRESSION ERROR???\n");
 	}
 	if (my_id == 0) printf("Deltas written to specified output file.\n");
 
+    fclose(gctx->minFP);
+    fclose(gctx->outFP);
+    fclose(gctx->subFP);
 	GA_Destroy(ga_sub); 
 	GA_Destroy(ga_min);
 	GA_Destroy(ga_out);	
+
+    return 0; //Success!
 }
 
 
@@ -350,10 +355,7 @@ void recoverMinuend(struct gctx_t *gctx) {
 	if (my_id == 0) {
 		int globalStride[1];
 		globalStride[0] = dims[0];
-		printf("Hi from %d\n",my_id);
-		printf("%d\n",dims[0]);
 		double * delDoubles = calloc(dims[0],sizeof(double));
-		printf("%d\n",dims[0]);
 		
 		double * subDoubles = calloc(dims[0],sizeof(double));
 		unsigned long int i = 0;
@@ -486,3 +488,57 @@ void printBin(char * msg, long int x) {
 	printf(": %s ",msg);
 	printf("\n");
 }
+
+
+
+/* Okay for the time being...very large files we'd need to
+ * presumably loop and not do it in one shebang 
+ * uses zlib to compress our stream of doubles and write it
+ * to the specified output file. */
+int doCompress(double * ds,unsigned long int size, FILE * outFile, int level) {
+    /* Need to compensate for elts being 8 bytes long*/
+    size = sizeof(double) * size;
+    int ret, flush;
+    unsigned have;
+    z_stream strm;
+    unsigned char * in = (char *) ds; 
+    unsigned char * out = calloc(size,sizeof(unsigned char)); 
+    
+    strm.zalloc = Z_NULL;
+    strm.zfree = Z_NULL;
+    strm.opaque = Z_NULL;
+    ret = deflateInit(&strm, level);
+    if (ret != Z_OK)
+        return ret; 
+    strm.avail_in = size;
+    strm.next_in = in;
+    strm.avail_out = size;
+    strm.next_out = out;
+    ret = deflate(&strm, Z_FINISH);
+    assert (ret != Z_STREAM_ERROR);
+    have = size - strm.avail_out; /* Check space in output buffer */
+    int res = fwrite(out, 1, have, outFile); /* Write to disk */
+    printf("=== %d bytes written to disk\n",res);
+
+    (void) deflateEnd(&strm);
+    return Z_OK;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
