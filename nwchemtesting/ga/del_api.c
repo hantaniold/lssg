@@ -96,7 +96,7 @@ int computeDelta(struct del_t * gctx) {
     int ga_del;
     
 	dims[0] = gctx->minSize/8;
-	chunk[0] = dims[0]/nrProcs - 1;
+	chunk[0] = dims[0]/nrProcs;
     ga_del = NGA_Create(C_DBL,1, dims, "Delta array", chunk);
 	
 	GA_Sync();
@@ -236,7 +236,7 @@ int recoverMinuend(struct del_t * gctx) {
     int ga_sub = gctx->subHandle;
     int ga_min, ga_del;
     int dims[1]; dims[0] = gctx->subSize/8;
-    int chunk[1]; chunk[0] = dims[0]/nrProcs - 1;
+    int chunk[1]; chunk[0] = dims[0]/nrProcs;
     ga_min = NGA_Create(C_DBL, 1, dims, "Recovered minuend array", chunk);
     if (!ga_min) GA_Error("failed to make output min array",1);
     if (my_id == 0) printf("=== Created output min array\n");
