@@ -42,6 +42,9 @@ int computeDeltaFromMemToDisk(int subHandle, int minHandle, unsigned long int si
     strcpy(gctx->delName,delName);
     gctx->doFilter = doFilter;
     gctx->thresholdExp = thresholdExp;
+    if (doFilter) {
+        gctx->thresholdVal = pow(10,gctx->thresholdExp);
+    }
     
 	
 	my_id = GA_Nodeid();
@@ -155,8 +158,8 @@ int computeDelta(struct del_t * gctx) {
 
 		//If |d| < 10^thresholdExp, round to zero and write that out.
 		if (gctx->doFilter && 
-				(((d < pow(10,gctx->thresholdExp)) && (d >= 0)) || 
-				((d > -1 * pow(10,gctx->thresholdExp)) && d < 0))
+				(((d < gctx->thresholdVal) && (d >= 0)) || 
+				((d > -gctx->thresholdVal) && d < 0))
 			) {
             
 			localOutDoubles[j] = 0;

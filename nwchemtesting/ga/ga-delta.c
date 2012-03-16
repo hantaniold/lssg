@@ -4,6 +4,7 @@
 #include <string.h>
 #include <math.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include "ga.h"
 #include "macdecls.h"
 #include "zlib.h"
@@ -45,10 +46,13 @@ struct gctx_t {
 	unsigned long int delSize;
 	double thresholdExp;
 	int doFilter;
+    struct timeval * tv;
+    double last_time;
+    double thresholdVal;
 };
 
 struct gctx_t * gctx;
-int doCompress(double * ds, unsigned long int size, FILE * outFile, int level);
+int doCompress(double * ds, unsigned long int size, FILE * outFile, int level, int doWrite);
 int doDecompress(char * cs, unsigned long int sizeIn, unsigned long int sizeOut, char * outDs);
 int recoverMinuend(struct gctx_t * gctx);
 int computeDelta(struct gctx_t *gctx);
@@ -62,6 +66,7 @@ int main(int argc, char * argv[]) {
 #else 
 	PBEGIN_(argc, argv);
 #endif
+    gctx->tv = calloc(1,sizeof(struct timeval));
 
 	GA_Initialize();
 	int heap = 1000000000, stack = 1000000000;
@@ -83,6 +88,7 @@ int main(int argc, char * argv[]) {
 			gctx->doFilter = 1;
 			sscanf(optarg, "%lf", &(gctx->thresholdExp));
 			if (my_id == 0) printf("=== Using a cutoff of 10^%lf\n",gctx->thresholdExp);
+            gctx->thresholdVal = pow(10,gctx->thresholdExp);
             break;
 		case 'r':
 			doRecover++;
@@ -199,6 +205,11 @@ int computeDelta(struct gctx_t * gctx) {
 	if (my_id == 0) printf("=== Transferring global doubles to local arrays.\n");
 /* Move global doubles to local arrays */ 
 	int lo[1], hi[1];
+    if (my_id == 0) {
+        gettimeofday(gctx->tv,NULL);
+        gctx->last_time = gctx->tv->tv_sec + (gctx->tv->tv_usec / 1000000.0); 
+        printf("=== Time: %lf\n",gctx->last_time);
+    }
 	NGA_Distribution(ga_out, my_id, lo,hi);
 	int stride[1]; stride[0] = hi[0] - lo[0] + 1;
 	
@@ -250,8 +261,8 @@ int computeDelta(struct gctx_t * gctx) {
 
 		//If |d| < 10^thresholdExp, round to zero and write that out.
 		if (gctx->doFilter && 
-				(((d < pow(10,gctx->thresholdExp)) && (d >= 0)) || 
-				((d > -1 * pow(10,gctx->thresholdExp)) && d < 0))
+				(((d < gctx->thresholdVal) && (d >= 0)) || 
+				((d > -gctx->thresholdVal) && d < 0))
 			) {
 			localOutDoubles[j] = 0;
 			continue;
@@ -299,11 +310,21 @@ int computeDelta(struct gctx_t * gctx) {
 	
 	GA_Sync();
 	if (my_id == 0) {
-		double * outDoubles = calloc(dims[0],sizeof(double));
+       		double * outDoubles = calloc(dims[0],sizeof(double));
 		lo[0] = 0; hi[0] = dims[0] - 1; stride[0] = dims[0];
+        gettimeofday(gctx->tv,NULL);
+        double now = gctx->tv->tv_sec + (gctx->tv->tv_usec / 1000000.0); 
+        printf("=== Computation: %lf\n",now - gctx->last_time);
 		NGA_Get(ga_out, lo, hi, outDoubles, stride);
-        if (doCompress(outDoubles,dims[0],gctx->outFP, Z_DEFAULT_COMPRESSION) != Z_OK) 
+//last arg = 1 = do compression
+        if (doCompress(outDoubles,dims[0],gctx->outFP, Z_DEFAULT_COMPRESSION,1) != Z_OK)
+        //printf("COMPRESSION OFF\n");
+        //if (doCompress(outDoubles,dims[0],gctx->outFP, Z_DEFAULT_COMPRESSION,0) != Z_OK) 
             printf("=== COMPRESSION ERROR???\n");
+        gettimeofday(gctx->tv,NULL);
+        now = gctx->tv->tv_sec + (gctx->tv->tv_usec / 1000000.0); 
+        printf("=== Compression: %lf\n",now - gctx->last_time);
+
 	}
 	if (my_id == 0) printf("Deltas written to specified output file.\n");
 
@@ -510,7 +531,7 @@ void printBin(char * msg, long int x) {
  * presumably loop and not do it in one shebang 
  * uses zlib to compress our stream of doubles and write it
  * to the specified output file. */
-int doCompress(double * ds,unsigned long int size, FILE * outFile, int level) {
+int doCompress(double * ds,unsigned long int size, FILE * outFile, int level, int doWrite) {
     /* Need to compensate for elts being 8 bytes long*/
     size = sizeof(double) * size;
     int ret, flush;
@@ -532,8 +553,11 @@ int doCompress(double * ds,unsigned long int size, FILE * outFile, int level) {
     ret = deflate(&strm, Z_FINISH);
     assert (ret != Z_STREAM_ERROR);
     have = size - strm.avail_out; /* Check space in output buffer */
-    int res = fwrite(out, 1, have, outFile); /* Write to disk */
-    printf("=== %d bytes written to disk\n",res);
+    if (doWrite) { 
+        int res = fwrite(out, 1, have, outFile); /* Write to disk */
+        printf("=== %d bytes written to disk\n",res);
+    }
+
 
     (void) deflateEnd(&strm);
     return Z_OK;
