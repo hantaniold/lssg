@@ -27,6 +27,7 @@ struct del_t {
 
     float thresholdExp;
     int doFilter;
+    double thresholdVal;
     
 } ;
 
