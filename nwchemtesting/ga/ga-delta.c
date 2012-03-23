@@ -5,6 +5,7 @@
 #include <math.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <time.h>
 #include "ga.h"
 #include "macdecls.h"
 #include "zlib.h"
@@ -46,9 +47,13 @@ struct gctx_t {
 	unsigned long int delSize;
 	double thresholdExp;
 	int doFilter;
-    struct timeval * tv;
-    double last_time;
     double thresholdVal;
+    clock_t tt_read;
+    clock_t tt_compute;
+    clock_t tt_compress;
+    clock_t tt_write;
+    clock_t tt_written;
+    
 };
 
 struct gctx_t * gctx;
@@ -61,12 +66,12 @@ void printBin(char * msg, long int x);
 int main(int argc, char * argv[]) {
 	int my_id, nprocs;
 	gctx = calloc(1,sizeof(struct gctx_t));
+
 #ifdef MPI
 	MPI_Init(&argc, &argv);
 #else 
 	PBEGIN_(argc, argv);
 #endif
-    gctx->tv = calloc(1,sizeof(struct timeval));
 
 	GA_Initialize();
 	int heap = 1000000000, stack = 1000000000;
@@ -139,6 +144,7 @@ int main(int argc, char * argv[]) {
 int computeDelta(struct gctx_t * gctx) {
 	int my_id = GA_Nodeid();
 	int nrProcs = GA_Nnodes();
+    clock_t start = clock();
 
 /* Find file sizes */
 	struct stat * minStat = calloc(1,sizeof(struct stat));
@@ -163,17 +169,19 @@ int computeDelta(struct gctx_t * gctx) {
 	chunk[0] = dims[0]/nrProcs;
 	ga_min = NGA_Create(C_DBL, 1, dims, "Minuend Array", chunk);
 	if (!ga_min) GA_Error("Failure to create minuend array", 1);
-	if (my_id == 0) printf("=== Created Minuend Array.\n");
+	//if (my_id == 0) printf("=== Created Minuend Array.\n");
 	ga_sub = GA_Duplicate(ga_min,"Subtrahend Array");
 	ga_out = GA_Duplicate(ga_min,"Output Array");
 
 	if (!ga_sub) GA_Error("duplicating min -> sub failed.",1);
 	if (!ga_out) GA_Error("duplicating min -> out failed.",1);
-	if (my_id == 0) printf("=== Created Subtrahend and Output Array.\n");
+	//if (my_id == 0) printf("=== Created Subtrahend and Output Array.\n");
 	
 	
 /* Read the minuend and subtrahend into local buffers, copy this to global array.
  * Maybe split to two processors o_O */
+
+    gctx->tt_read = clock();
 	if (my_id == 0) {
 		int globalStride[1];
 		globalStride[0] = dims[0];
@@ -183,33 +191,30 @@ int computeDelta(struct gctx_t * gctx) {
 		unsigned long int i = 0;
 		char * buf1 = (char *) malloc(8);
 		char * buf2 = (char *) malloc(8);
-		printf("=== Filling min/sub array on processor %d\n",my_id);
+	//	printf("=== Filling min/sub array on processor %d\n",my_id);
 		while (fscanf(gctx->minFP,"%8c", buf1) != EOF && fscanf(gctx->subFP, "%8c", buf2) != EOF) {
 			minDoubles[i] = *((double *) buf1);
 			subDoubles[i] = *((double *) buf2);
 			i++;
 		}	
 		if (i != dims[0]) GA_Error("Did not read as many doubles as expected from subtrahend",1);
-		printf("=== Filled min/sub arrays on processor %d\n",my_id);
+	//	printf("=== Filled min/sub arrays on processor %d\n",my_id);
 		int lo[1]; lo[0] = 0;
 		int hi[1]; hi[0] = dims[0] - 1;
 		NGA_Put(ga_sub, lo, hi, subDoubles, globalStride);
 		NGA_Put(ga_min, lo, hi, minDoubles, globalStride);
 		free(subDoubles);
 		free(minDoubles);
+        printf("=== Read time: %lf\n",(double) (clock() - gctx->tt_read) / CLOCKS_PER_SEC);
 	}
 
 
 	GA_Sync();
 
-	if (my_id == 0) printf("=== Transferring global doubles to local arrays.\n");
+	//if (my_id == 0) printf("=== Transferring global doubles to local arrays.\n");
 /* Move global doubles to local arrays */ 
 	int lo[1], hi[1];
-    if (my_id == 0) {
-        gettimeofday(gctx->tv,NULL);
-        gctx->last_time = gctx->tv->tv_sec + (gctx->tv->tv_usec / 1000000.0); 
-        printf("=== Time: %lf\n",gctx->last_time);
-    }
+    gctx->tt_compute = clock();
 	NGA_Distribution(ga_out, my_id, lo,hi);
 	int stride[1]; stride[0] = hi[0] - lo[0] + 1;
 	
@@ -219,7 +224,7 @@ int computeDelta(struct gctx_t * gctx) {
 	double * localSubDoubles = calloc(stride[0],sizeof(double));
 	NGA_Get(ga_sub, lo, hi, localSubDoubles, stride); 
 
-	if (my_id == 0) printf("=== Starting delta computation\n");	
+	//if (my_id == 0) printf("=== Starting delta computation\n");	
 /* Do the delta computation, writing deltas out to a local buffer. */
 	unsigned long int j;
 	double * localOutDoubles = calloc(stride[0],sizeof(double));
@@ -239,7 +244,7 @@ int computeDelta(struct gctx_t * gctx) {
 	short SH_AMT;
 	long NEG_ZERO = 1L << 63;
 
-	printf("=== Processor %d entering delta computation\n",my_id);	
+	//printf("=== Processor %d entering delta computation\n",my_id);	
 	for (j = 0; j < stride[0]; j++) {
 	
 		m = localMinDoubles[j];
@@ -303,28 +308,25 @@ int computeDelta(struct gctx_t * gctx) {
 		localOutDoubles[j] = d;
 	}
 
-	printf("=== Processor %d computed %ld deltas.\n",my_id,j);
+	//printf("=== Processor %d computed %ld deltas.\n",my_id,j);
 	//Combine local buffer into global array.
-	if (my_id == 0) printf("=== Moving computed deltas to global array.\n");
+	//if (my_id == 0) printf("=== Moving computed deltas to global array.\n");
 	NGA_Put(ga_out, lo, hi, localOutDoubles, stride);
 	
 	GA_Sync();
 	if (my_id == 0) {
-       		double * outDoubles = calloc(dims[0],sizeof(double));
+       	double * outDoubles = calloc(dims[0],sizeof(double));
 		lo[0] = 0; hi[0] = dims[0] - 1; stride[0] = dims[0];
-        gettimeofday(gctx->tv,NULL);
-        double now = gctx->tv->tv_sec + (gctx->tv->tv_usec / 1000000.0); 
-        printf("=== Computation: %lf\n",now - gctx->last_time);
+        printf("=== Compute time: %lf\n",(double) (clock() - gctx->tt_compute)/CLOCKS_PER_SEC);
 		NGA_Get(ga_out, lo, hi, outDoubles, stride);
+        gctx->tt_compress = clock();
 //last arg = 1 = do compression
+        printf("WRITE TO DISK ON\n");
         if (doCompress(outDoubles,dims[0],gctx->outFP, Z_DEFAULT_COMPRESSION,1) != Z_OK)
-        //printf("COMPRESSION OFF\n");
         //if (doCompress(outDoubles,dims[0],gctx->outFP, Z_DEFAULT_COMPRESSION,0) != Z_OK) 
             printf("=== COMPRESSION ERROR???\n");
-        gettimeofday(gctx->tv,NULL);
-        now = gctx->tv->tv_sec + (gctx->tv->tv_usec / 1000000.0); 
-        printf("=== Compression: %lf\n",now - gctx->last_time);
 
+        printf("=== read, write, compute/compress: %lf",(double) (clock() - gctx->tt_read) / CLOCKS_PER_SEC);
 	}
 	if (my_id == 0) printf("Deltas written to specified output file.\n");
 
@@ -553,9 +555,13 @@ int doCompress(double * ds,unsigned long int size, FILE * outFile, int level, in
     ret = deflate(&strm, Z_FINISH);
     assert (ret != Z_STREAM_ERROR);
     have = size - strm.avail_out; /* Check space in output buffer */
+    gctx->tt_write = clock();
+    printf("=== Compression: %lf\n",(double) (gctx->tt_write - gctx->tt_compress)/CLOCKS_PER_SEC);
     if (doWrite) { 
         int res = fwrite(out, 1, have, outFile); /* Write to disk */
         printf("=== %d bytes written to disk\n",res);
+        gctx->tt_written = clock();
+        printf("=== Write time: %lf\n", ((double) (gctx->tt_written - gctx->tt_write))/CLOCKS_PER_SEC);
     }
 
 
